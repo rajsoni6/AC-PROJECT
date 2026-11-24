@@ -10,28 +10,29 @@ export default function BulletinBoard() {
   const [loading, setLoading]               = useState(false);
   const [verifyCommitment, setVerifyCommitment] = useState("");
   const [verifyResult, setVerifyResult]     = useState(null);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     api.get("/public/elections")
       .then((r) => setElections(r.data))
-      .catch(() => {});
+      .catch((err) => setError(err.response?.data?.detail || "Could not load public elections"));
   }, []);
 
   async function loadBoard(election) {
-    setSelected(election); setLoading(true);
+    setSelected(election); setLoading(true); setError("");
     setEntries([]); setVerifyResult(null); setElectionResult(null); setMerkleRoot("");
     try {
       const r = await api.get(`/public/bulletin/${election.id}`);
       setEntries(r.data.entries);
       setMerkleRoot(r.data.merkle_root);
-    } catch { /* ignore */ }
+    } catch (err) { setError(err.response?.data?.detail || "Could not load bulletin entries"); }
 
     // load result if available
-    if (election.status === "tallying" || election.status === "completed") {
+    if (election.status === "completed") {
       try {
         const rr = await api.get(`/public/results/${election.id}`);
         setElectionResult(rr.data);
-      } catch { /* no result yet */ }
+      } catch { /* result may not have been published yet */ }
     }
     setLoading(false);
   }
@@ -66,6 +67,8 @@ export default function BulletinBoard() {
         <span className="badge badge-white">Publicly Verifiable</span>
       </div>
 
+      {error && <div className="alert alert-error">{error}</div>}
+
       {/* Election selector */}
       <div className="card" style={{ marginBottom: 20 }}>
         <div className="card-header"><div className="card-title">Select Election</div></div>
@@ -78,7 +81,7 @@ export default function BulletinBoard() {
                 className={`btn btn-sm ${selected?.id === e.id ? "btn-primary" : "btn-outline"}`}
                 onClick={() => loadBoard(e)}>
                 {e.title}
-                {(e.status === "tallying" || e.status === "completed") && " 🏆"}
+                {e.status === "completed" && " 🏆"}
               </button>
             ))}
           </div>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import api from "../../api";
+import { createEligibilityProof } from "../../utils/eligibilityProof";
 
 export default function CastVote() {
   const { electionId } = useParams();
@@ -8,10 +9,30 @@ export default function CastVote() {
   const [election, setElection] = useState(null);
   const [selected, setSelected] = useState(null);
   const [qrToken, setQrToken] = useState("");
+  const [eligibilitySecret, setEligibilitySecret] = useState("");
+  const [zkpParams, setZkpParams] = useState(null);
+  const [credentialLoading, setCredentialLoading] = useState(true);
+  const [credentialMessage, setCredentialMessage] = useState("");
   const [step, setStep] = useState(1); // 1=select, 2=confirm, 3=done
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    api.get("/voter/qrcode")
+      .then((res) => {
+        if (res.data.status !== "ready") {
+          setCredentialMessage("Your voter approval is pending. Voting will be available after approval.");
+          return;
+        }
+        setQrToken(res.data.qr_token);
+        setEligibilitySecret(res.data.eligibility_secret);
+        setZkpParams(res.data.zkp_params);
+        setCredentialMessage("Used for ZKP eligibility verification and nullifier generation.");
+      })
+      .catch((err) => setCredentialMessage(err.response?.data?.detail || "Could not load your QR credential."))
+      .finally(() => setCredentialLoading(false));
+  }, []);
 
   useEffect(() => {
     api.get(`/voter/elections/${electionId}`)
@@ -21,11 +42,19 @@ export default function CastVote() {
 
   async function handleSubmit() {
     if (!selected) { setError("Please select a candidate"); return; }
+    if (!qrToken || !eligibilitySecret || !zkpParams) {
+      setError("A verified QR credential is required before voting.");
+      return;
+    }
     setError(""); setLoading(true);
     try {
+      const eligibilityProof = await createEligibilityProof(
+        qrToken, eligibilitySecret, zkpParams, electionId
+      );
       const res = await api.post(`/voter/vote/${electionId}`, {
         candidate_id: selected,
         qr_token: qrToken,
+        eligibility_proof: eligibilityProof,
       });
       setResult(res.data);
       setStep(3);
@@ -47,15 +76,15 @@ export default function CastVote() {
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: "1.3rem", fontWeight: 700 }}>{election?.title || "Cast Vote"}</h1>
         <p style={{ color: "var(--text-muted)", fontSize: "0.875rem", marginTop: 4 }}>
-          Your vote is encrypted with Exponential ElGamal. A ZKP proves validity without revealing your choice.
+          The server checks your signed QR credential and eligibility proof, then verifies the encrypted ballot proofs.
         </p>
       </div>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 20 }}>
         <span className="badge badge-info">Exponential ElGamal</span>
-        <span className="badge badge-white">Zero-Knowledge Proof</span>
+        <span className="badge badge-white">Eligibility ZKP</span>
+        <span className="badge badge-white">One-hot Ballot ZKP</span>
         <span className="badge badge-white">SHA-256 Nullifier</span>
-        <span className="badge badge-white">TLS 1.3</span>
       </div>
 
       {/* Steps */}
@@ -106,11 +135,12 @@ export default function CastVote() {
           </div>
           <div className="form-group">
             <label className="form-label">QR Token (from your QR code)</label>
-            <input className="form-input" value={qrToken} onChange={(e) => setQrToken(e.target.value)}
-              placeholder="Paste your QR credential token" />
-            <div className="form-hint">Used for ZKP eligibility verification and nullifier generation</div>
+            <input className="form-input" value={qrToken} readOnly aria-readonly="true"
+              style={{ background: "var(--bg-hover)", border: "1px dashed var(--text-muted)", color: "var(--text-secondary)", cursor: "not-allowed", boxShadow: "none" }}
+              placeholder={credentialLoading ? "Loading your QR credential…" : "QR credential unavailable"} />
+            <div className="form-hint">{credentialMessage || "Used for ZKP eligibility verification and nullifier generation."}</div>
           </div>
-          <button className="btn btn-primary" disabled={!selected} onClick={() => setStep(2)}>
+          <button className="btn btn-primary" disabled={!selected || credentialLoading || !qrToken || !eligibilitySecret || !zkpParams} onClick={() => setStep(2)}>
             Continue →
           </button>
         </div>
@@ -132,9 +162,10 @@ export default function CastVote() {
           <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
             {[
               "Vote encrypted with Exponential ElGamal",
-              "Zero-Knowledge Proof generated (valid vote proof)",
+              "The server will verify the credential eligibility proof before accepting",
+              "The server will verify each encrypted choice and the one-choice proof",
               "SHA-256 nullifier prevents double voting",
-              "Submitted over TLS 1.3",
+              "Submitted to the authenticated voting API",
               "Stored in PostgreSQL atomic transaction",
             ].map((s) => (
               <div key={s} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.8rem", color: "var(--text-secondary)" }}>
@@ -144,7 +175,7 @@ export default function CastVote() {
           </div>
           <div style={{ display: "flex", gap: 12 }}>
             <button className="btn btn-outline" onClick={() => setStep(1)}>← Back</button>
-            <button className="btn btn-primary" disabled={loading} onClick={handleSubmit}>
+            <button className="btn btn-primary" disabled={loading || credentialLoading || !qrToken || !eligibilitySecret || !zkpParams} onClick={handleSubmit}>
               {loading && <span className="spinner" />}
               Encrypt & Submit Vote
             </button>
@@ -161,6 +192,8 @@ export default function CastVote() {
               { label: "Ballot Commitment (SHA-256)", value: result.commitment },
               { label: "Nullifier", value: result.nullifier },
               { label: "Receipt Signature (Ed25519)", value: result.receipt_signature?.slice(0, 60) + "…" },
+              { label: "Eligibility ZKP", value: result.eligibility_zkp_verified ? "Verified" : "Failed" },
+              { label: "Ballot ZKP", value: result.ballot_zkp_verified ? "Verified" : "Failed" },
               { label: "Merkle Inclusion", value: result.merkle_root ? "Included in bulletin board" : "Pending" },
             ].map((r) => (
               <div key={r.label} style={{ padding: "10px 14px", background: "var(--bg-input)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>

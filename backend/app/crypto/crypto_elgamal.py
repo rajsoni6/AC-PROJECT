@@ -8,6 +8,7 @@ Syllabus: Unit I — Shamir, Unit II — ElGamal, Unit III — Homomorphic Encry
 """
 import secrets
 import hashlib
+import hmac
 from math import gcd
 
 
@@ -32,6 +33,35 @@ _G = 2
 _Q = (_P - 1) // 2   # Sophie Germain prime order
 
 
+def zkp_group_parameters() -> dict:
+    """Public group values used by the voter's eligibility proof."""
+    return {"p": str(_P), "g": str(_G), "q": str(_Q)}
+
+
+def derive_eligibility_secret(key: bytes, voter_id: str) -> int:
+    """Derive a stable per-voter credential secret from the server signing seed."""
+    digest = hmac.new(key, f"verifyvote-eligibility:{voter_id}".encode(), hashlib.sha256).digest()
+    return int.from_bytes(digest, "big") % (_Q - 1) + 1
+
+
+def verify_eligibility_proof(proof: dict, public_key: int, context: str) -> bool:
+    """Verify a Schnorr proof of possession for a signed approved credential."""
+    try:
+        nonce = str(proof["nonce"])
+        commitment = int(proof["commitment"])
+        response = int(proof["response"])
+        p, g, q = _P, _G, _Q
+        if len(nonce) != 64 or any(ch not in "0123456789abcdef" for ch in nonce.lower()):
+            return False
+        if not (0 < commitment < p and 0 <= response < q and 0 < public_key < p):
+            return False
+        challenge_text = f"eligibility-v1:{context}:{nonce}:{commitment}:{public_key}"
+        challenge = int(hashlib.sha256(challenge_text.encode()).hexdigest(), 16) % q
+        return pow(g, response, p) == (commitment * pow(public_key, challenge, p)) % p
+    except Exception:
+        return False
+
+
 def elgamal_keygen():
     """
     Generate ElGamal key pair over the 2048-bit MODP group.
@@ -46,7 +76,7 @@ def elgamal_keygen():
     }
 
 
-def elgamal_encrypt(m: int, pub: dict) -> tuple[int, int]:
+def elgamal_encrypt(m: int, pub: dict, return_randomness: bool = False):
     """
     Exponential ElGamal: encrypt vote m ∈ {0,1}.
     Ciphertext = (g^r mod p, g^m * h^r mod p)
@@ -56,7 +86,7 @@ def elgamal_encrypt(m: int, pub: dict) -> tuple[int, int]:
     r = secrets.randbelow(q - 2) + 2
     c1 = pow(g, r, p)
     c2 = (pow(g, m, p) * pow(h, r, p)) % p
-    return c1, c2
+    return (c1, c2, r) if return_randomness else (c1, c2)
 
 
 def elgamal_add(ct1: tuple, ct2: tuple, p: int) -> tuple[int, int]:
@@ -86,7 +116,9 @@ def elgamal_decrypt(c1: int, c2: int, priv: dict) -> int:
 
 # ── Shamir's (t, n) Secret Sharing ───────────────────────────────────────────
 
-_SHAMIR_PRIME = 2**521 - 1   # Mersenne prime M521
+# ElGamal private exponents are elements of Z_q; use a field large enough to
+# preserve the full exponent when splitting/reconstructing it.
+_SHAMIR_PRIME = _P
 
 
 def _poly_eval(coeffs: list[int], x: int, prime: int) -> int:
@@ -121,36 +153,94 @@ def shamir_reconstruct(shares: list[tuple[int, int]], prime: int = _SHAMIR_PRIME
 
 # ── Zero-Knowledge Proof (Schnorr, Unit IV) ──────────────────────────────────
 
-def zkp_prove_vote(m: int, r: int, pub: dict) -> dict:
-    """
-    Chaum-Pedersen ZKP: prove that encrypted vote is 0 or 1
-    without revealing which. Simplified Schnorr-style commitment.
-    Returns proof dict.
-    """
-    p, g, q, h = pub["p"], pub["g"], pub["q"], pub["h"]
-    # Commitment
-    k = secrets.randbelow(q - 2) + 2
-    R1 = pow(g, k, p)
-    R2 = pow(h, k, p)
-    # Challenge (Fiat-Shamir heuristic)
-    challenge_input = f"{R1}{R2}{pow(g,r,p)}{pow(h,r,p)}".encode()
-    c = int(hashlib.sha256(challenge_input).hexdigest(), 16) % q
-    # Response
-    s = (k - c * r) % q
-    return {"R1": R1, "R2": R2, "c": c, "s": s}
+def _challenge_q(q: int, message: str) -> int:
+    return int(hashlib.sha256(message.encode()).hexdigest(), 16) % q
+
+
+def zkp_prove_vote(m: int, r: int, pub: dict, c1: int | None = None, c2: int | None = None) -> dict:
+    """Fiat-Shamir Chaum-Pedersen OR proof that an ElGamal vote encrypts 0 or 1."""
+    if m not in (0, 1):
+        raise ValueError("Vote must be 0 or 1")
+    p, g, q, h = (int(pub[k]) for k in ("p", "g", "q", "h"))
+    c1 = pow(g, r, p) if c1 is None else int(c1)
+    c2 = (pow(g, m, p) * pow(h, r, p)) % p if c2 is None else int(c2)
+    y1 = c1
+    y2 = [c2, (c2 * pow(g, -1, p)) % p]
+
+    fake = 1 - m
+    challenges = [0, 0]
+    responses = [0, 0]
+    commitments = [[0, 0], [0, 0]]
+    fake_c = secrets.randbelow(q)
+    fake_s = secrets.randbelow(q)
+    fake_a = (pow(g, fake_s, p) * pow(y1, fake_c, p)) % p
+    fake_b = (pow(h, fake_s, p) * pow(y2[fake], fake_c, p)) % p
+    real_w = secrets.randbelow(q)
+    real_a = pow(g, real_w, p)
+    real_b = pow(h, real_w, p)
+    commitments[fake] = [fake_a, fake_b]
+    commitments[m] = [real_a, real_b]
+    transcript = ":".join(str(v) for pair in commitments for v in pair)
+    total_c = _challenge_q(q, f"vote-or:{p}:{g}:{q}:{h}:{c1}:{c2}:{transcript}")
+    challenges[fake] = fake_c
+    challenges[m] = (total_c - fake_c) % q
+    responses[fake] = fake_s
+    responses[m] = (real_w - challenges[m] * r) % q
+    return {"commitments": commitments, "challenges": challenges, "responses": responses}
 
 
 def zkp_verify_vote(proof: dict, c1: int, c2: int, pub: dict) -> bool:
-    """Verify Schnorr ZKP for a vote ciphertext."""
+    """Verify a zero-knowledge proof that a ciphertext encrypts a bit."""
     try:
-        p, g, q, h = pub["p"], pub["g"], pub["q"], pub["h"]
-        R1, R2, c, s = proof["R1"], proof["R2"], proof["c"], proof["s"]
-        # Recompute challenge
-        challenge_input = f"{R1}{R2}{c1}{c2}".encode()
-        c_check = int(hashlib.sha256(challenge_input).hexdigest(), 16) % q
-        # Verify equations
-        lhs1 = pow(g, s, p) * pow(c1, c, p) % p
-        lhs2 = pow(h, s, p) * pow(c2, c, p) % p
-        return lhs1 == R1 and lhs2 == R2 and c == c_check
+        p, g, q, h = (int(pub[k]) for k in ("p", "g", "q", "h"))
+        c1, c2 = int(c1), int(c2)
+        commitments = [[int(v) for v in pair] for pair in proof["commitments"]]
+        challenges = [int(v) for v in proof["challenges"]]
+        responses = [int(v) for v in proof["responses"]]
+        if len(commitments) != 2 or any(len(pair) != 2 for pair in commitments):
+            return False
+        if len(challenges) != 2 or len(responses) != 2:
+            return False
+        transcript = ":".join(str(v) for pair in commitments for v in pair)
+        total_c = _challenge_q(q, f"vote-or:{p}:{g}:{q}:{h}:{c1}:{c2}:{transcript}")
+        if (sum(challenges) % q) != total_c:
+            return False
+        y2 = [c2, (c2 * pow(g, -1, p)) % p]
+        for bit in (0, 1):
+            a, b = commitments[bit]
+            c, s = challenges[bit], responses[bit]
+            if pow(g, s, p) * pow(c1, c, p) % p != a:
+                return False
+            if pow(h, s, p) * pow(y2[bit], c, p) % p != b:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def zkp_prove_encryption_of_one(randomness: int, c1: int, c2: int, pub: dict) -> dict:
+    """Prove the homomorphic sum of all candidate ciphertexts encrypts exactly one."""
+    p, g, q, h = (int(pub[k]) for k in ("p", "g", "q", "h"))
+    y2 = (int(c2) * pow(g, -1, p)) % p
+    w = secrets.randbelow(q)
+    a, b = pow(g, w, p), pow(h, w, p)
+    c = _challenge_q(q, f"one:{p}:{g}:{q}:{h}:{c1}:{c2}:{a}:{b}")
+    s = (w - c * int(randomness)) % q
+    return {"a": a, "b": b, "c": c, "s": s}
+
+
+def zkp_verify_encryption_of_one(proof: dict, c1: int, c2: int, pub: dict) -> bool:
+    """Verify a Chaum-Pedersen proof that a ciphertext encrypts one."""
+    try:
+        p, g, q, h = (int(pub[k]) for k in ("p", "g", "q", "h"))
+        c1, c2 = int(c1), int(c2)
+        a, b, c, s = (int(proof[k]) for k in ("a", "b", "c", "s"))
+        if c != _challenge_q(q, f"one:{p}:{g}:{q}:{h}:{c1}:{c2}:{a}:{b}"):
+            return False
+        y2 = (c2 * pow(g, -1, p)) % p
+        return (
+            pow(g, s, p) * pow(c1, c, p) % p == a
+            and pow(h, s, p) * pow(y2, c, p) % p == b
+        )
     except Exception:
         return False

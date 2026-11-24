@@ -152,8 +152,7 @@ KEK      → HKDF(master_key, voter_id) → derived per voter
 - Used for: election config, officer approvals, receipts, results
 
 **Function:** `rsa_blind_sign(private_key_pem, blinded_message) -> bytes`
-- RSA Blind Signature for anonymous credential generation
-- Officer signs without seeing the actual credential content
+- Unintegrated RSA blind-signature prototype; current voter credentials use Ed25519.
 
 **Used in:**
 - Officer approval signatures (Step 5)
@@ -400,13 +399,13 @@ Step 5:  ELIGIBILITY APPROVAL
          -> SHA-256 audit fingerprint
          -> Ed25519 officer signature on approval payload
 
-Step 6:  ANONYMOUS CREDENTIAL
-         -> RSA Blind Signature (officer signs without seeing content)
-         -> ZKP eligibility proof
+Step 6:  VOTER CREDENTIAL
+         -> Stable Ed25519 system signature issued after officer approval
+         -> Schnorr ZKP secret bound to the signed credential
          -> SHA-256 nullifier generated
 
 Step 7:  QR CODE
-         -> Ed25519 signed credential token
+         -> Stable Ed25519 signed credential with a credential public key
          -> Base64 encoded QR image
 
 Step 8:  ELECTION CREATION
@@ -421,7 +420,8 @@ Step 9:  TRUSTEE DISTRIBUTION
 Step 10: VOTER LOGIN + QR VERIFY
          -> Password verified (Argon2id)
          -> Ed25519 QR credential verified
-         -> ZKP eligibility check
+         -> Schnorr proof of credential-secret possession verified
+         -> ABAC eligibility policy checked
 
 Step 11: CANDIDATE SELECTION
          -> RBAC: voter role required
@@ -429,13 +429,16 @@ Step 11: CANDIDATE SELECTION
 
 Step 12: BALLOT ENCRYPTION
          -> Exponential ElGamal per candidate (1=selected, 0=others)
-         -> ZKP proves vote is 0 or 1 (Schnorr)
+         -> OR ZKP proves each encrypted choice is 0 or 1
+         -> Chaum-Pedersen proof checks exactly one selected candidate
          -> SHA-256 ballot commitment
 
 Step 13: BALLOT SUBMISSION
-         -> TLS 1.3 transport
+         -> Authenticated API request (transport encryption is configured by deployment)
          -> SHA-256 nullifier checked (double-vote prevention)
          -> PostgreSQL atomic transaction
+         -> Receipt payload and Ed25519 signature saved with ballot
+
 
 Step 14: BULLETIN BOARD
          -> SHA-256 commitment posted
@@ -457,7 +460,6 @@ Step 17: TRUSTEE APPROVAL
 Step 18: HOMOMORPHIC TALLY
          -> ElGamal ciphertexts multiplied (homomorphic addition)
          -> No individual vote decrypted
-         -> ZKP tally verification
 
 Step 19: THRESHOLD DECRYPTION
          -> Shamir reconstruct private key x from 3 shares
@@ -466,7 +468,7 @@ Step 19: THRESHOLD DECRYPTION
 
 Step 20: RESULT PUBLICATION
          -> Ed25519 signs final result
-         -> SHA-256 result integrity hash
+         -> SHA-256 result integrity hash; verify the signature before trusting results
          -> PKI: public key available for verification
 
 Step 21: AUDIT & FORENSICS

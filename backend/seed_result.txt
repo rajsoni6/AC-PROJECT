@@ -1,0 +1,6 @@
+Super Admin created successfully!
+Email    : admin@verifyvote.com
+Password : Admin@1234
+Role     : super_admin
+
+Login at: http://localhost:3000/login

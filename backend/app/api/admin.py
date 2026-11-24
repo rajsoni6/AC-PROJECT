@@ -3,6 +3,9 @@ api/admin.py — Super Admin endpoints
 Steps 8–21: Election creation, trustee distribution, tally, results, audit
 """
 import json
+import hashlib
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +14,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 
 from app.core.database import get_db
-from app.core.security import require_admin, require_trustee, get_current_user
+from app.core.security import require_admin, require_trustee, require_role, get_current_user
 from app.models.user import User, Role
 from app.models.election import (
     Election, Candidate, Ballot, BulletinEntry, AuditLog, ElectionStatus
@@ -21,15 +24,88 @@ from app.crypto import (
     shamir_split, shamir_reconstruct,
     ed25519_generate_keypair, sign_payload, verify_payload,
     sha256_hex, sha256_bytes, hmac_sha256,
-    MerkleTree
+    MerkleTree, zkp_verify_vote, zkp_verify_encryption_of_one,
+    aes_gcm_encrypt, aes_gcm_decrypt, derive_kek
 )
 from app.core.config import settings
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
+
+def _share_master_key() -> bytes:
+    configured = settings.TRUSTEE_SHARE_ENCRYPTION_KEY or settings.SYSTEM_SIGNING_KEY
+    if configured:
+        try:
+            key = bytes.fromhex(configured)
+        except ValueError as exc:
+            raise RuntimeError("TRUSTEE_SHARE_ENCRYPTION_KEY must be 64 hex characters") from exc
+        if len(key) != 32:
+            raise RuntimeError("TRUSTEE_SHARE_ENCRYPTION_KEY must be 64 hex characters")
+        return key
+    return sha256_bytes(settings.SECRET_KEY)
+
+
+def _seal_share(share: dict) -> dict:
+    owner = share["trustee_id"]
+    index = int(share["index"])
+    aad = f"trustee-share:v1:{owner}:{index}".encode()
+    key = derive_kek(_share_master_key(), f"trustee-share:{owner}")
+    encrypted = aes_gcm_encrypt(key, json.dumps({"x": share["x"], "y": share["y"]}).encode(), aad)
+    return {"index": index, "trustee_id": owner, "encrypted_share": encrypted}
+
+
+def _open_share(share: dict) -> dict:
+    if "encrypted_share" not in share:
+        return {"x": share["x"], "y": share["y"]}
+    owner = share["trustee_id"]
+    index = int(share["index"])
+    aad = f"trustee-share:v1:{owner}:{index}".encode()
+    key = derive_kek(_share_master_key(), f"trustee-share:{owner}")
+    wrapped = share["encrypted_share"]
+    raw = aes_gcm_decrypt(key, wrapped["nonce"], wrapped["ciphertext"], wrapped["tag"], aad)
+    return json.loads(raw)
+
+
+def _all_ballot_proofs_verified(ballots, election) -> bool:
+    """Re-check persisted ballot ZKPs before reporting a positive verification status.
+
+    Eligibility proofs are verified before a ballot is inserted; their presence is
+    required here alongside cryptographic re-verification of the stored ballot proofs.
+    """
+    if not ballots or not election.elgamal_public_key:
+        return False
+    pub = {key: int(value) for key, value in election.elgamal_public_key.items()}
+    p = pub["p"]
+    for ballot in ballots:
+        proof = ballot.zkp_proof or {}
+        if not isinstance(proof.get("eligibility"), dict) or not proof["eligibility"]:
+            return False
+        candidate_proofs = proof.get("candidate_bits")
+        if not isinstance(candidate_proofs, dict) or not ballot.encrypted_votes:
+            return False
+        candidate_ids = {item.get("candidate_id") for item in ballot.encrypted_votes}
+        if None in candidate_ids or set(candidate_proofs) != candidate_ids:
+            return False
+        aggregate_c1, aggregate_c2 = 1, 1
+        try:
+            for item in ballot.encrypted_votes:
+                c1, c2 = int(item["c1"]), int(item["c2"])
+                if not zkp_verify_vote(candidate_proofs[item["candidate_id"]], c1, c2, pub):
+                    return False
+                aggregate_c1 = aggregate_c1 * c1 % p
+                aggregate_c2 = aggregate_c2 * c2 % p
+            if not zkp_verify_encryption_of_one(
+                proof.get("one_hot", {}), aggregate_c1, aggregate_c2, pub
+            ):
+                return False
+        except (KeyError, TypeError, ValueError):
+            return False
+    return True
+
+
 HMAC_KEY = sha256_bytes(settings.SECRET_KEY)
 
-# System Ed25519 key (in production: HSM-backed)
+# Stable system Ed25519 key. Set SYSTEM_SIGNING_KEY to a persistent 32-byte hex seed.
 _SYS_PRIV: str = ""
 _SYS_PUB: str = ""
 
@@ -37,7 +113,20 @@ _SYS_PUB: str = ""
 def _sys_keys():
     global _SYS_PRIV, _SYS_PUB
     if not _SYS_PRIV:
-        _SYS_PRIV, _SYS_PUB = ed25519_generate_keypair()
+        seed_hex = settings.SYSTEM_SIGNING_KEY
+        seed = bytes.fromhex(seed_hex) if seed_hex else hashlib.sha256(settings.SECRET_KEY.encode()).digest()
+        if len(seed) != 32:
+            raise RuntimeError("SYSTEM_SIGNING_KEY must be a 32-byte hex seed")
+        private_key = Ed25519PrivateKey.from_private_bytes(seed)
+        _SYS_PRIV = private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode()
+        _SYS_PUB = private_key.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode()
     return _SYS_PRIV, _SYS_PUB
 
 
@@ -113,10 +202,21 @@ async def create_election(
         select(func.count()).where(User.role == Role.TRUSTEE, User.is_active == True)
     )
     actual_trustees = tc.scalar()
+    if actual_trustees < 2:
+        raise HTTPException(400, "Add at least two active trustees before creating an election.")
+    if req.total_trustees != actual_trustees:
+        raise HTTPException(400, "Total trustees is fixed to the current number of active trustee accounts. Refresh and try again.")
+    if req.threshold < 2:
+        raise HTTPException(400, "Threshold must be at least 2 trustees.")
     if req.total_trustees > actual_trustees:
         raise HTTPException(400, f"Only {actual_trustees} active trustees exist. Cannot create {req.total_trustees} shares.")
     if req.threshold > req.total_trustees:
         raise HTTPException(400, f"Threshold ({req.threshold}) cannot exceed total trustees ({req.total_trustees}).")
+    trustee_rows = await db.execute(
+        select(User).where(User.role == Role.TRUSTEE, User.is_active.is_(True))
+        .order_by(User.id).limit(req.total_trustees)
+    )
+    assigned_trustees = trustee_rows.scalars().all()
 
     # ElGamal keygen
     keys = elgamal_keygen()
@@ -125,12 +225,15 @@ async def create_election(
 
     # Convert to string for JSON storage (BigInt safe)
     pub_str = {k: str(v) for k, v in pub.items()}
-    priv_str = {k: str(v) for k, v in priv.items()}
 
     # Shamir split of private key x
     x = priv["x"]
     shares = shamir_split(x, req.total_trustees, req.threshold)
-    trustee_shares = [{"index": i, "x": str(s[0]), "y": str(s[1])} for i, s in enumerate(shares)]
+    trustee_shares = [
+        {"index": i, "trustee_id": str(assigned_trustees[i].id), "x": str(s[0]), "y": str(s[1])}
+        for i, s in enumerate(shares)
+    ]
+    trustee_shares = [_seal_share(share) for share in trustee_shares]
 
     # Ed25519 sign election config
     sys_priv, sys_pub = _sys_keys()
@@ -148,7 +251,9 @@ async def create_election(
         created_by=current_user.id,
         eligibility_policy=req.eligibility_policy.model_dump(),
         elgamal_public_key=pub_str,
-        elgamal_private_key_encrypted=priv_str,
+        # The private exponent is retained only as Shamir shares, not as a
+        # plaintext copy in the election row.
+        elgamal_private_key_encrypted=None,
         trustee_shares=trustee_shares,
         threshold=req.threshold,
         total_trustees=req.total_trustees,
@@ -185,6 +290,15 @@ async def list_elections(
         q = q.where(Election.status.in_(statuses))
     r = await db.execute(q)
     elections = r.scalars().all()
+
+    # Trustees only see elections for which a share was assigned at creation.
+    if current_user.role == Role.TRUSTEE:
+        trustee_id = str(current_user.id)
+        elections = [
+            election for election in elections
+            if any(str(share.get("trustee_id")) == trustee_id
+                   for share in (election.trustee_shares or []))
+        ]
 
     result = []
     for e in elections:
@@ -254,8 +368,47 @@ async def get_shares(
     e = await _get_election(election_id, db)
     shares = e.trustee_shares or []
     approvals = e.trustee_approvals or {}   # {trustee_id: share_index}
+    if current_user.role == Role.SUPER_ADMIN:
+        return {
+            "threshold": e.threshold,
+            "total": e.total_trustees,
+            "approval_count": len(approvals),
+            "approvals": {},
+        }
+    if shares and not all(share.get("trustee_id") for share in shares):
+        if not e.elgamal_private_key_encrypted or "x" not in e.elgamal_private_key_encrypted:
+            raise HTTPException(409, "Legacy election shares cannot be safely migrated; recreate this election")
+        active_rows = await db.execute(
+            select(User).where(User.role == Role.TRUSTEE, User.is_active.is_(True))
+            .order_by(User.id).limit(e.total_trustees)
+        )
+        trustees = active_rows.scalars().all()
+        if len(trustees) < e.total_trustees:
+            raise HTTPException(409, "Not enough active trustees to migrate this election")
+        x = int(e.elgamal_private_key_encrypted["x"])
+        new_shares = shamir_split(x, e.total_trustees, e.threshold)
+        shares = [
+            {"index": i, "trustee_id": str(trustees[i].id), "x": str(s[0]), "y": str(s[1])}
+            for i, s in enumerate(new_shares)
+        ]
+        shares = [_seal_share(share) for share in shares]
+        e.trustee_shares = shares
+        e.trustee_approvals = {}
+        e.elgamal_private_key_encrypted = None
+        await db.commit()
+        approvals = {}
+    elif shares and any("encrypted_share" not in share for share in shares):
+        shares = [_seal_share(share) for share in shares]
+        e.trustee_shares = shares
+        await db.commit()
+    own_share = next((share for share in shares if share.get("trustee_id") == str(current_user.id)), None)
+    if not own_share:
+        raise HTTPException(403, "No trustee share is assigned to your account for this election")
+    own_secret_share = _open_share(own_share)
     return {
-        "shares": [{"x": s["x"], "y_preview": s["y"][:12]} for s in shares],
+        "my_share_index": own_share["index"],
+        "my_share_x": own_secret_share["x"],
+        "my_share_y": own_secret_share["y"],
         "threshold": e.threshold,
         "total": e.total_trustees,
         "approvals": approvals,          # {trustee_email: index}
@@ -271,7 +424,7 @@ class TrusteeApproveReq(BaseModel):
 async def trustee_approve(
     election_id: str,
     req: TrusteeApproveReq,
-    current_user: User = Depends(require_trustee),
+    current_user: User = Depends(require_role(Role.TRUSTEE)),
     db: AsyncSession = Depends(get_db),
 ):
     """Trustee submits their share approval. Auto-triggers tally when threshold met."""
@@ -279,6 +432,8 @@ async def trustee_approve(
     shares = e.trustee_shares or []
     if req.share_index < 0 or req.share_index >= len(shares):
         raise HTTPException(400, "Invalid share index")
+    if shares[req.share_index].get("trustee_id") != str(current_user.id):
+        raise HTTPException(403, "This share is not assigned to your trustee account")
 
     approvals = dict(e.trustee_approvals or {})
     trustee_key = current_user.email
@@ -286,20 +441,29 @@ async def trustee_approve(
     if trustee_key in approvals:
         del approvals[trustee_key]   # toggle off
     else:
+        if any(index == req.share_index for index in approvals.values()):
+            raise HTTPException(409, "This trustee share is already approved")
         approvals[trustee_key] = req.share_index
 
     e.trustee_approvals = approvals
     await db.commit()
 
     tally_data = None
+    tally_error = None
     # Auto-trigger tally when threshold first met
     if len(approvals) >= e.threshold and e.status == ElectionStatus.CLOSED and not e.final_result:
         approved_indices = list(approvals.values())[:e.threshold]
         selected = [shares[i] for i in approved_indices]
         try:
             pub = {k: int(v) for k, v in e.elgamal_public_key.items()}
-            priv_stored = {k: int(v) for k, v in e.elgamal_private_key_encrypted.items()}
-            priv_rec = {"x": priv_stored["x"], "p": pub["p"], "g": pub["g"], "q": pub["q"]}
+            share_tuples = [
+                (int(_open_share(share)["x"]), int(_open_share(share)["y"]))
+                for share in selected
+            ]
+            reconstructed_x = shamir_reconstruct(share_tuples)
+            if pow(pub["g"], reconstructed_x, pub["p"]) != pub["h"]:
+                raise ValueError("Approved shares did not reconstruct the election key")
+            priv_rec = {"x": reconstructed_x, "p": pub["p"], "g": pub["g"], "q": pub["q"]}
 
             ballots_r = await db.execute(select(Ballot).where(Ballot.election_id == election_id))
             ballots = ballots_r.scalars().all()
@@ -335,14 +499,17 @@ async def trustee_approve(
             await db.commit()
 
             tally_data = {"results": results, "total_votes": total,
-                          "tally_hash": tally_hash, "result_signature": result_sig}
-        except Exception:
-            pass  # tally failure should not block approval
+                          "tally_hash": tally_hash, "result_signature": result_sig,
+                          "zkp_verified": _all_ballot_proofs_verified(ballots, e)}
+        except Exception as exc:
+            await db.rollback()
+            tally_error = f"Trustee approval saved, but threshold tally failed: {exc}"
 
     return {
         "approval_count": len(approvals),
         "approvals": approvals,
         "tally": tally_data,
+        "tally_error": tally_error,
     }
 
 
@@ -365,12 +532,15 @@ async def compute_tally(
     shares = e.trustee_shares or []
     approved_indices = list(approvals.values())[:e.threshold]
     selected = [shares[i] for i in approved_indices]
-    share_tuples = [(int(s["x"]), int(s["y"])) for s in selected]
-
     pub = {k: int(v) for k, v in e.elgamal_public_key.items()}
-    # Use stored private key directly (Shamir is for threshold ceremony demo)
-    priv_stored = {k: int(v) for k, v in e.elgamal_private_key_encrypted.items()}
-    priv_reconstructed = {"x": priv_stored["x"], "p": pub["p"], "g": pub["g"], "q": pub["q"]}
+    share_tuples = [
+        (int(_open_share(share)["x"]), int(_open_share(share)["y"]))
+        for share in selected
+    ]
+    reconstructed_x = shamir_reconstruct(share_tuples)
+    if pow(pub["g"], reconstructed_x, pub["p"]) != pub["h"]:
+        raise HTTPException(400, "Approved Shamir shares do not match the election public key")
+    priv_reconstructed = {"x": reconstructed_x, "p": pub["p"], "g": pub["g"], "q": pub["q"]}
 
     # Load all ballots
     ballots_r = await db.execute(select(Ballot).where(Ballot.election_id == election_id))
@@ -415,6 +585,7 @@ async def compute_tally(
         "total_votes": total,
         "tally_hash": tally_hash,
         "result_signature": result_sig,
+        "zkp_verified": _all_ballot_proofs_verified(ballots, e),
     }
 
 
@@ -424,6 +595,8 @@ async def get_result(election_id: str, db: AsyncSession = Depends(get_db)):
     if not e.final_result:
         raise HTTPException(404, "No result yet")
     bc = await db.execute(select(func.count()).where(Ballot.election_id == election_id))
+    ballot_rows = await db.execute(select(Ballot).where(Ballot.election_id == election_id))
+    ballots = ballot_rows.scalars().all()
     return {
         "results": e.final_result,
         "total_votes": bc.scalar(),
@@ -431,7 +604,7 @@ async def get_result(election_id: str, db: AsyncSession = Depends(get_db)):
         "result_signature": e.result_signature,
         "final_snapshot_hash": e.final_snapshot_hash,
         "status": e.status.value,
-        "zkp_verified": True,
+        "zkp_verified": _all_ballot_proofs_verified(ballots, e),
     }
 
 
@@ -456,6 +629,8 @@ async def publish_result(
     await db.commit()
 
     bc = await db.execute(select(func.count()).where(Ballot.election_id == election_id))
+    ballot_rows = await db.execute(select(Ballot).where(Ballot.election_id == election_id))
+    ballots = ballot_rows.scalars().all()
     return {
         "results": e.final_result,
         "total_votes": bc.scalar(),
@@ -463,7 +638,7 @@ async def publish_result(
         "result_signature": sig,
         "final_snapshot_hash": e.final_snapshot_hash,
         "status": "published",
-        "zkp_verified": True,
+        "zkp_verified": _all_ballot_proofs_verified(ballots, e),
     }
 
 

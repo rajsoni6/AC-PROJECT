@@ -7,7 +7,7 @@ from enum import Enum as PyEnum
 
 from sqlalchemy import (
     Column, String, Boolean, DateTime, Enum, Text,
-    ForeignKey, Integer, JSON, BigInteger
+    ForeignKey, Integer, JSON, BigInteger, UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -80,6 +80,7 @@ class Candidate(Base):
 
 class Ballot(Base):
     __tablename__ = "ballots"
+    __table_args__ = (UniqueConstraint("election_id", "nullifier", name="uq_ballot_election_nullifier"),)
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     election_id = Column(UUID(as_uuid=True), ForeignKey("elections.id"), nullable=False)
@@ -95,6 +96,10 @@ class Ballot(Base):
 
     # Ballot commitment (SHA-256)
     commitment = Column(String(64), nullable=False)
+
+    # Persist the exact signed receipt generated in the vote transaction.
+    receipt_payload = Column(JSON, nullable=True)
+    receipt_signature = Column(Text, nullable=True)
 
     # Merkle inclusion
     merkle_index = Column(Integer, nullable=True)

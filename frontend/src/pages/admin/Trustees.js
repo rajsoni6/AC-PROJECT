@@ -14,11 +14,13 @@ export default function Trustees() {
   const [approveLoading, setApproveLoading] = useState(false);
   const [error, setError]           = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+  const [electionsLoading, setElectionsLoading] = useState(true);
 
   useEffect(() => {
     api.get("/admin/elections?status=closed,tallying")
       .then((res) => setElections(res.data))
-      .catch(() => {});
+      .catch((err) => setError(err.response?.data?.detail || "Failed to load closed elections"))
+      .finally(() => setElectionsLoading(false));
   }, []);
 
   async function loadShares(election) {
@@ -39,17 +41,11 @@ export default function Trustees() {
 
   async function handleApprove() {
     if (!sharesData) return;
-    const myIndex = sharesData.approvals?.[user.email];
-    const alreadyApproved = myIndex !== undefined;
-
-    // Each trustee gets a fixed share based on their order in the trustees list
-    // If not yet approved, find their assigned index from trusteesInfo or next available
-    let shareIndex = myIndex;
-    if (!alreadyApproved) {
-      // assign next available share index
-      const taken = new Set(Object.values(sharesData.approvals || {}));
-      shareIndex = sharesData.shares.findIndex((_, i) => !taken.has(i));
-      if (shareIndex === -1) { setError("All shares are already taken."); return; }
+    const shareIndex = sharesData.my_share_index;
+    const alreadyApproved = sharesData.approvals?.[user.email] === shareIndex;
+    if (!Number.isInteger(shareIndex)) {
+      setError("No Shamir share is assigned to this trustee account.");
+      return;
     }
 
     setApproveLoading(true); setError(""); setSuccessMsg("");
@@ -65,6 +61,8 @@ export default function Trustees() {
       if (res.data.tally) {
         setTallyResult(res.data.tally);
         setSuccessMsg("✅ Threshold met! Tally computed automatically.");
+      } else if (res.data.tally_error) {
+        setError(res.data.tally_error);
       } else {
         setSuccessMsg(alreadyApproved ? "Approval withdrawn." : "Your share approved successfully!");
       }
@@ -104,7 +102,7 @@ export default function Trustees() {
         <div className="card-header">
           <div className="card-title">Select Election</div>
         </div>
-        {elections.length === 0 ? (
+        {electionsLoading ? <div className="alert alert-info">Loading closed elections...</div> : elections.length === 0 ? (
           <div className="alert alert-info">No closed elections available.</div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -122,7 +120,9 @@ export default function Trustees() {
                     {e.ballot_count} votes · {e.status}
                   </div>
                 </div>
-                <span style={{ color: "var(--text-muted)" }}>→</span>
+                <button className="btn btn-outline btn-sm" onClick={(event) => { event.stopPropagation(); loadShares(e); }}>
+                  View Details
+                </button>
               </div>
             ))}
           </div>
@@ -155,7 +155,7 @@ export default function Trustees() {
           </div>
 
           {/* Who approved — shown to everyone */}
-          {Object.keys(approvals).length > 0 && (
+          {isTrustee && Object.keys(approvals).length > 0 && (
             <div style={{ marginBottom: 20 }}>
               <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>
                 Approved By

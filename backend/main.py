@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from sqlalchemy import text
 
 from app.core.database import engine, Base
 from app.api import api_router
@@ -19,6 +20,13 @@ import app.models.election  # noqa
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Add receipt storage and the election/nullifier guard to existing DBs.
+        await conn.execute(text("ALTER TABLE ballots ADD COLUMN IF NOT EXISTS receipt_payload JSON"))
+        await conn.execute(text("ALTER TABLE ballots ADD COLUMN IF NOT EXISTS receipt_signature TEXT"))
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_ballot_election_nullifier "
+            "ON ballots (election_id, nullifier)"
+        ))
     print("[OK] VerifyVote API started - all tables ready")
     yield
 

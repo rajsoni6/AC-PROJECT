@@ -28,6 +28,10 @@ npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
 
+# Local HTTPS certificates and private keys
+/backend/certs/*.pem
+/backend/certs/
+
 # Local databases and generated data
 *.sqlite
 *.sqlite3

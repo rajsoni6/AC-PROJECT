@@ -12,6 +12,8 @@ from .crypto_signatures import (
 from .crypto_elgamal import (
     elgamal_keygen, elgamal_encrypt, elgamal_add, elgamal_decrypt,
     shamir_split, shamir_reconstruct,
-    zkp_prove_vote, zkp_verify_vote
+    zkp_prove_vote, zkp_verify_vote,
+    zkp_prove_encryption_of_one, zkp_verify_encryption_of_one,
+    zkp_group_parameters, derive_eligibility_secret, verify_eligibility_proof
 )
 from .crypto_merkle import MerkleTree

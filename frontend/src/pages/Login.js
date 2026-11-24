@@ -20,7 +20,9 @@ export default function Login() {
       navigate("/dashboard");
     } catch (err) {
       const detail = err.response?.data?.detail;
-      if (Array.isArray(detail)) {
+      if (err.response?.status === 401) {
+        setError("Email or password is incorrect. Please check your credentials and try again.");
+      } else if (Array.isArray(detail)) {
         setError(detail.map((d) => d.msg).join(" | "));
       } else {
         setError(detail || "Invalid email or password");

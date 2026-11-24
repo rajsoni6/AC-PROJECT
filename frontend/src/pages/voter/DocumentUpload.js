@@ -16,6 +16,7 @@ export default function DocumentUpload() {
   const [status, setStatus]             = useState(null);
 
   const [hasDocument, setHasDocument] = useState(false);
+  const [statusError, setStatusError] = useState("");
 
   useEffect(() => {
     api.get("/voter/document-status")
@@ -23,7 +24,7 @@ export default function DocumentUpload() {
         setStatus(r.data?.verification_status);
         setHasDocument(r.data?.has_document ?? false);
       })
-      .catch(() => {});
+      .catch((err) => setStatusError(err.response?.data?.detail || "Could not load document status. Refresh and try again."));
   }, []);
 
   async function handleSubmit(e) {
@@ -186,6 +187,7 @@ export default function DocumentUpload() {
       </div>
 
       {renderContent()}
+      {statusError && !result && <div className="alert alert-error" style={{ marginTop: 14 }}>{statusError}</div>}
     </div>
   );
 }

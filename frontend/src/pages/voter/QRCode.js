@@ -22,16 +22,15 @@ export default function QRCode() {
   return (
     <div className="page-content">
       <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: "1.3rem", fontWeight: 700 }}>Anonymous Voting Credential</h1>
+        <h1 style={{ fontSize: "1.3rem", fontWeight: 700 }}>Voting Credential</h1>
         <p style={{ color: "var(--text-muted)", fontSize: "0.875rem", marginTop: 4 }}>
-          Your QR code contains a blind-signed anonymous credential. It proves eligibility without revealing your identity.
+          Your approved voter credential is signed by the voting system. Its eligibility proof is created automatically when you vote.
         </p>
       </div>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 20 }}>
-        <span className="badge badge-info">Blind Signature</span>
-        <span className="badge badge-white">Zero-Knowledge Proof</span>
-        <span className="badge badge-white">Ed25519 Signed</span>
+        <span className="badge badge-info">Ed25519 Credential</span>
+        <span className="badge badge-white">Eligibility ZKP</span>
         <span className="badge badge-white">SHA-256 Nullifier</span>
       </div>
 
@@ -49,7 +48,7 @@ export default function QRCode() {
                 { label: "Document Uploaded", done: true },
                 { label: "Officer Review", done: false },
                 { label: "Eligibility Approved", done: false },
-                { label: "Blind Signature Issued", done: false },
+                { label: "Signed Credential Issued", done: false },
                 { label: "QR Code Generated", done: false },
               ].map((s) => (
                 <div key={s.label} style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -86,6 +85,7 @@ export default function QRCode() {
               { label: "Nullifier (SHA-256)", value: data.nullifier },
               { label: "Credential Signature", value: data.credential_signature?.slice(0, 40) + "…" },
               { label: "Issued At", value: data.issued_at },
+              { label: "QR Token (auto-loaded for voting)", value: data.qr_token },
             ].map((r) => (
               <div key={r.label} style={{ padding: "10px 14px", background: "var(--bg-input)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
                 <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase" }}>{r.label}</div>
@@ -94,7 +94,7 @@ export default function QRCode() {
             ))}
           </div>
           <div className="alert alert-info" style={{ marginTop: 16, textAlign: "left" }}>
-            🔒 This QR code is cryptographically bound to your identity via blind signature. Present it at the voting terminal.
+            🔒 The server verifies this signed credential and a zero-knowledge proof before accepting a vote.
           </div>
         </div>
       )}

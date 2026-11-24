@@ -23,6 +23,7 @@ import AdminElections from "./pages/admin/Elections";
 import AdminCreateElection from "./pages/admin/CreateElection";
 import AdminTrustees from "./pages/admin/Trustees";
 import AdminResults from "./pages/admin/Results";
+import AdminReports from "./pages/admin/Reports";
 import AdminAudit from "./pages/admin/Audit";
 import AdminManageUsers from "./pages/admin/ManageUsers";
 
@@ -78,6 +79,9 @@ export default function App() {
             } />
             <Route path="admin/results" element={
               <ProtectedRoute roles={["super_admin"]}><AdminResults /></ProtectedRoute>
+            } />
+            <Route path="admin/reports" element={
+              <ProtectedRoute roles={["super_admin"]}><AdminReports /></ProtectedRoute>
             } />
             <Route path="admin/audit" element={
               <ProtectedRoute roles={["super_admin"]}><AdminAudit /></ProtectedRoute>

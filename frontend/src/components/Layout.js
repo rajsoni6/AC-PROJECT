@@ -55,6 +55,7 @@ const NAV = {
     { label: "Verify Voters",    path: "/officer/verifications",  icon: Icon.verify },
     { label: "Trustees",         path: "/admin/trustees",         icon: Icon.key },
     { label: "Results",          path: "/admin/results",          icon: Icon.results },
+    { label: "Reports",          path: "/admin/reports",          icon: Icon.results },
     { label: "Audit Log",        path: "/admin/audit",            icon: Icon.audit },
     { section: "Public" },
     { label: "Bulletin Board",   path: "/bulletin",               icon: Icon.board },

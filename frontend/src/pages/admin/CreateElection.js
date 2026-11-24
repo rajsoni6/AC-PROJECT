@@ -18,6 +18,7 @@ export default function CreateElection() {
   const [result, setResult] = useState(null);
   const [error, setError]   = useState("");
   const [loading, setLoading] = useState(false);
+  const [trusteesLoading, setTrusteesLoading] = useState(true);
 
   useEffect(() => {
     api.get("/admin/trustee-count").then((r) => {
@@ -27,7 +28,8 @@ export default function CreateElection() {
         total_trustees: r.data.count,
         threshold: Math.max(2, Math.ceil(r.data.count / 2)),
       }));
-    }).catch(() => {});
+    }).catch((err) => setError(err.response?.data?.detail || "Could not load active trustees. Please retry before creating an election."))
+      .finally(() => setTrusteesLoading(false));
   }, []);
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
@@ -95,7 +97,7 @@ export default function CreateElection() {
       {/* Step 1: Election Details */}
       {step === 1 && (
         <div className="card">
-          <div className="form-group">
+        <div className="form-group">
             <label className="form-label">Election Title *</label>
             <input className="form-input" value={form.title} onChange={set("title")} placeholder="General Election 2025" />
           </div>
@@ -129,17 +131,8 @@ export default function CreateElection() {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
             <div className="form-group">
               <label className="form-label">Total Trustees (n) — shares to generate</label>
-              <select className="form-select" value={form.total_trustees}
-                onChange={(e) => {
-                  const n = parseInt(e.target.value);
-                  setForm((f) => ({ ...f, total_trustees: n, threshold: Math.min(f.threshold, n) }));
-                }}
-                disabled={trusteesInfo.count === 0}>
-                {Array.from({ length: trusteesInfo.count }, (_, i) => i + 1).map((n) => (
-                  <option key={n} value={n}>{n} trustee{n > 1 ? "s" : ""}</option>
-                ))}
-              </select>
-              <div className="form-hint">Max: {trusteesInfo.count} (active trustees in system)</div>
+              <input className="form-input" type="number" value={trusteesInfo.count} readOnly aria-readonly="true" />
+              <div className="form-hint">Fixed to active trustee accounts. One Shamir share is assigned to each trustee when this election is created.</div>
             </div>
             <div className="form-group">
               <label className="form-label">Threshold (t) — min needed to decrypt</label>
@@ -152,11 +145,11 @@ export default function CreateElection() {
                     <option key={n} value={n}>{n} of {form.total_trustees}</option>
                   ))}
               </select>
-              <div className="form-hint">At least 2 trustees must approve</div>
+              <div className="form-hint">At least 2 trustees must approve. Add all trustees before creating the election; later-added trustees cannot join its existing key shares.</div>
             </div>
           </div>
 
-          <button className="btn btn-primary" disabled={!form.title || trusteesInfo.count === 0} onClick={() => setStep(2)}>
+          <button className="btn btn-primary" disabled={trusteesLoading || !form.title || trusteesInfo.count < 2} onClick={() => setStep(2)}>
             Next →
           </button>
         </div>

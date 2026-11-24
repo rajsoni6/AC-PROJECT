@@ -42,7 +42,7 @@ export default function Elections() {
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 20 }}>
         <span className="badge badge-info">ABAC Eligibility Check</span>
         <span className="badge badge-white">ElGamal Encrypted Ballot</span>
-        <span className="badge badge-white">ZKP Vote Proof</span>
+        <span className="badge badge-white">Eligibility & Ballot ZKP</span>
       </div>
 
       {error && <div className="alert alert-error">{error}</div>}
@@ -56,7 +56,7 @@ export default function Elections() {
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         {elections.map((e) => (
           <div key={e.id} className="card" style={{ cursor: "pointer" }}
-            onClick={() => e.status === "open" && navigate(`/voter/vote/${e.id}`)}>
+          onClick={() => e.status === "open" && !e.has_voted && navigate(`/voter/vote/${e.id}`)}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <div style={{ flex: 1 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>

@@ -12,18 +12,18 @@ Full-stack cryptographic e-voting system.
 | 1 | Voter Registration | Argon2id password hashing, Ed25519 keygen |
 | 2–3 | Document Upload & Storage | AES-256-GCM, SHA-256, KEK/DEK (KMS pattern) |
 | 4–5 | Officer Verification | AES-256-GCM decrypt, Ed25519 approval signature |
-| 6 | Anonymous Credential | RSA Blind Signature, ZKP, SHA-256 nullifier |
+| 6 | Voter Credential | Ed25519 signed eligibility credential, Schnorr ZKP, SHA-256 nullifier |
 | 7 | QR Code | Ed25519 signed token, secure encoding |
 | 8 | Election Creation | ElGamal keygen, Ed25519 config signature |
 | 9 | Trustee Key Distribution | Shamir (3-of-5) Secret Sharing |
-| 10 | Voter Login & QR Verify | Ed25519 verify, ZKP eligibility |
+| 10 | Voter Login & QR Verify | Signed QR verify, Schnorr eligibility ZKP, ABAC |
 | 11 | Candidate Selection | RBAC + ABAC policy check |
-| 12–13 | Ballot Encryption & Submit | Exponential ElGamal, ZKP, SHA-256, nullifier, atomic TX |
+| 12–13 | Ballot Encryption & Submit | Exponential ElGamal, bit and one-hot ZKPs, SHA-256, atomic TX |
 | 14 | Bulletin Board | SHA-256 commitments, Merkle Tree, Ed25519 |
 | 15 | Voter Receipt | Ed25519 signed, SHA-256 commitment |
 | 16 | Election Closing | SHA-256 snapshot hash, Ed25519 |
 | 17 | Trustee Approval | Shamir reconstruct, Ed25519, 3-of-5 |
-| 18–19 | Homomorphic Tally | Exponential ElGamal, ZKP tally proof |
+| 18–19 | Homomorphic Tally | Exponential ElGamal, signed results |
 | 20 | Result Publication | Ed25519, SHA-256, PKI |
 | 21 | Audit & Forensics | SHA-256, HMAC-SHA-256, Ed25519 |
 
@@ -103,6 +103,9 @@ cd backend
 # Edit .env — set DATABASE_URL and generate a SECRET_KEY
 # DATABASE_URL=postgresql+asyncpg://postgres:password@localhost:5432/verifyvote
 # SECRET_KEY=your-very-long-random-secret
+# SYSTEM_SIGNING_KEY=<64 hex characters; keep the same value across restarts>
+
+
 
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8000

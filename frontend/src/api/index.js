@@ -12,11 +12,12 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// Auto-refresh on 401
+// Clear expired/invalid access tokens on 401; this client does not refresh tokens.
 api.interceptors.response.use(
   (res) => res,
   async (err) => {
-    if (err.response?.status === 401) {
+    const isLoginAttempt = err.config?.url?.includes("/auth/login");
+    if (err.response?.status === 401 && !isLoginAttempt) {
       localStorage.removeItem("access_token");
       window.location.href = "/login";
     }

@@ -31,7 +31,7 @@ export default function Receipt() {
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 20 }}>
         <span className="badge badge-info">Ed25519 Signed</span>
         <span className="badge badge-white">SHA-256 Commitment</span>
-        <span className="badge badge-white">Merkle Inclusion Proof</span>
+        <span className="badge badge-white">Merkle Root</span>
       </div>
 
       {error && <div className="alert alert-error">{error}</div>}
@@ -51,12 +51,20 @@ export default function Receipt() {
                 Voted: {new Date(r.submitted_at).toLocaleString()}
               </div>
             </div>
-            <span className="badge badge-success">Verified ✓</span>
+            <span className={`badge ${r.signature_valid ? "badge-success" : "badge-error"}`}>
+              {r.signature_valid
+                ? (r.receipt_recovered ? "Recovered & signed ✓" : "Signature verified ✓")
+                : "Signature invalid"}
+            </span>
           </div>
+          {r.legacy_credential_vote && (
+            <div className="alert alert-warning" style={{ marginBottom: 16 }}>
+              This ballot was submitted before QR and eligibility-proof verification was required.
+            </div>
+          )}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {[
               { label: "Ballot Commitment (SHA-256)", value: r.commitment },
-              { label: "Nullifier", value: r.nullifier },
               { label: "Receipt Signature (Ed25519)", value: r.receipt_signature },
               { label: "Merkle Root", value: r.merkle_root || "Pending" },
             ].map((item) => (

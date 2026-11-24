@@ -6,12 +6,15 @@ export default function Results() {
   const [selected, setSelected] = useState(null);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [detailsLoadingId, setDetailsLoadingId] = useState(null);
   const [error, setError] = useState("");
+  const [listLoading, setListLoading] = useState(true);
 
   useEffect(() => {
     api.get("/admin/elections")
       .then((r) => setElections(r.data))
-      .catch(() => {});
+      .catch((err) => setError(err.response?.data?.detail || "Failed to load elections"))
+      .finally(() => setListLoading(false));
   }, []);
 
   async function loadResult(e) {
@@ -20,11 +23,14 @@ export default function Results() {
       setError("Tally not computed yet. Trustees need to approve shares first.");
       return;
     }
+    setDetailsLoadingId(e.id);
     try {
       const r = await api.get(`/admin/elections/${e.id}/result`);
       setResult(r.data);
     } catch (err) {
       setError(err.response?.data?.detail || "No result yet");
+    } finally {
+      setDetailsLoadingId(null);
     }
   }
 
@@ -68,7 +74,7 @@ export default function Results() {
       {/* Election list */}
       <div className="card" style={{ marginBottom: 20 }}>
         <div className="card-header"><div className="card-title">Select Election</div></div>
-        {elections.length === 0 ? (
+        {listLoading ? <div className="alert alert-info">Loading elections...</div> : elections.length === 0 ? (
           <div className="alert alert-info">No elections found.</div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -98,7 +104,10 @@ export default function Results() {
                       {hasResult  && " · Result available ✓"}
                     </div>
                   </div>
-                  <span style={{ color: "var(--text-muted)" }}>→</span>
+                  <button className="btn btn-outline btn-sm" disabled={detailsLoadingId === e.id}
+                    onClick={(event) => { event.stopPropagation(); loadResult(e); }}>
+                    {detailsLoadingId === e.id ? <><span className="spinner" /> Loading details…</> : <>⌕ See Details</>}
+                  </button>
                 </div>
               );
             })}
@@ -133,7 +142,7 @@ export default function Results() {
                   <div style={{
                     height: "100%", borderRadius: 99,
                     width: `${(r.votes / maxVotes) * 100}%`,
-                    background: r.is_winner ? "#fff" : "var(--text-muted)",
+                    background: r.is_winner ? "var(--accent)" : "var(--text-muted)",
                     transition: "width 0.5s",
                   }} />
                 </div>
@@ -151,7 +160,6 @@ export default function Results() {
               { label: "Tally Hash (SHA-256)", value: result.tally_hash },
               { label: "Result Signature (Ed25519)", value: result.result_signature ? result.result_signature.slice(0, 64) + "…" : "Pending" },
               { label: "Final Snapshot Hash", value: result.final_snapshot_hash || "Pending" },
-              { label: "ZKP Tally Verification", value: result.zkp_verified ? "✓ Verified" : "Pending" },
             ].map((item) => (
               <div key={item.label} style={{ padding: "10px 14px", background: "var(--bg-input)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
                 <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase" }}>{item.label}</div>

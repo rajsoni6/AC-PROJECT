@@ -65,12 +65,12 @@ class VerifyReq(BaseModel):
 
 @router.get("/results/{election_id}")
 async def public_result(election_id: str, db: AsyncSession = Depends(get_db)):
-    """Public election result — only for completed/tallying elections."""
+    """Public result is available only after the admin publishes it."""
     r = await db.execute(select(Election).where(Election.id == election_id))
     e = r.scalar_one_or_none()
     if not e:
         raise HTTPException(404, "Election not found")
-    if e.status not in [ElectionStatus.TALLYING, ElectionStatus.COMPLETED]:
+    if e.status != ElectionStatus.COMPLETED:
         raise HTTPException(404, "Result not published yet")
     if not e.final_result:
         raise HTTPException(404, "Result not available yet")
@@ -91,9 +91,7 @@ async def public_result(election_id: str, db: AsyncSession = Depends(get_db)):
 @router.get("/all-results")
 async def all_public_results(db: AsyncSession = Depends(get_db)):
     """All completed elections with results."""
-    r = await db.execute(
-        select(Election).where(Election.status.in_([ElectionStatus.TALLYING, ElectionStatus.COMPLETED]))
-    )
+    r = await db.execute(select(Election).where(Election.status == ElectionStatus.COMPLETED))
     elections = r.scalars().all()
     results = []
     for e in elections:
